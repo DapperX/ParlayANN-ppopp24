@@ -86,7 +86,7 @@ struct GraphIndex{
         else return beam_search<Point, PointRange<T, Point>, unsigned int>(q, G, Points, 0, QP);
     }
 
-    NeighborsAndDistances batch_search(py::array_t<T, py::array::c_style | py::array::forcecast> &queries, uint64_t num_queries, uint64_t knn,
+    std::pair<NeighborsAndDistances, size_t> batch_search(py::array_t<T, py::array::c_style | py::array::forcecast> &queries, uint64_t num_queries, uint64_t knn,
                         uint64_t beam_width, int64_t visit_limit = -1){
         if(visit_limit == -1) visit_limit = HNSW_index? 0: G.size();
         QueryParams QP(knn, beam_width, 1.35, visit_limit, HNSW_index?0:G.max_degree());
@@ -98,10 +98,13 @@ struct GraphIndex{
         parlay::sequence<unsigned int> point_ids;
         parlay::sequence<float> point_distances;
 
+        parlay::sequence<size_t> distance_computations(num_queries);
+
 
         parlay::parallel_for(0, num_queries, [&] (size_t i){
             Point q = Point(queries.data(i), Points.dimension(), Points.aligned_dimension(), i);
             auto [pairElts, dist_cmps] = search_dispatch(q, QP);
+            distance_computations[i] = dist_cmps;
             auto [frontier, visited] = pairElts;
             parlay::sequence<unsigned int> point_ids;
             parlay::sequence<float> point_distances;
@@ -110,7 +113,10 @@ struct GraphIndex{
                 dists.mutable_data(i)[j] = frontier[j].second;
             }
         });
-        return std::make_pair(std::move(ids), std::move(dists));
+
+        size_t total_dist_cmps = parlay::reduce(distance_computations);
+        std::cout << "Total distance computations: " << total_dist_cmps << std::endl;
+        return std::make_pair(std::make_pair(std::move(ids), std::move(dists)), total_dist_cmps);
     }
 
     NeighborsAndDistances batch_search_from_string(std::string &queries, uint64_t num_queries, uint64_t knn,
