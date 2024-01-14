@@ -755,7 +755,8 @@ HNSW<U,Allocator>::HNSW(Iter begin, Iter end, uint32_t dim_, float m_l_, uint32_
 	std::random_device rd;
 	auto perm = parlay::random_permutation<uint32_t>(n, rd());
 	auto rand_seq = parlay::delayed_seq<T>(n, [&](uint32_t i){
-		return *(begin+perm[i]);
+		//return *(begin+perm[i]);
+		return *(begin+i);
 	});
 
 	const auto level_ep = get_level_random();
@@ -891,7 +892,7 @@ void HNSW<U,Allocator>::insert(Iter begin, Iter end, bool from_blank)
 
 			auto &eps_u = eps[i]; // TODO: check
 			auto res = search_layer(u, eps_u, ef_construction, l_c);
-			auto neighbors_vec = select_neighbors(u.data, res, m/*get_threshold_m(l_c)*factor_m*/, l_c);
+			auto neighbors_vec = select_neighbors(u.data, res, get_threshold_m(l_c)/**factor_m*/, l_c);
 			// move the content from `neighbors_vec` to `u.neighbors[l_c]`
 			// auto &nbh_u = nbh_new[i];
 			auto &edge_u = edge_add[i];
