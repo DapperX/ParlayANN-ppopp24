@@ -90,6 +90,7 @@ struct GraphIndex{
                         uint64_t beam_width, int64_t visit_limit = -1){
         if(visit_limit == -1) visit_limit = HNSW_index? 0: G.size();
         QueryParams QP(knn, beam_width, 1.35, visit_limit, HNSW_index?0:G.max_degree());
+        if(beam_width==1000) QP.cut = 10.0;
 
         py::array_t<unsigned int> ids({num_queries, knn});
         py::array_t<float> dists({num_queries, knn});
