@@ -89,7 +89,7 @@ struct GraphIndex{
     std::pair<NeighborsAndDistances, size_t> batch_search(py::array_t<T, py::array::c_style | py::array::forcecast> &queries, uint64_t num_queries, uint64_t knn,
                         uint64_t beam_width, int64_t visit_limit = -1){
         if(visit_limit == -1) visit_limit = HNSW_index? 0: G.size();
-        QueryParams QP(knn, beam_width, 0.0, visit_limit, HNSW_index?0:G.max_degree());
+        QueryParams QP(knn, beam_width, 100.0, visit_limit, HNSW_index?0:G.max_degree());
 
         py::array_t<unsigned int> ids({num_queries, knn});
         py::array_t<float> dists({num_queries, knn});
