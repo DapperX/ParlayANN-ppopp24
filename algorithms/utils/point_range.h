@@ -58,7 +58,7 @@ struct PointRange{
 
   PointRange() : values(std::shared_ptr<T[]>(nullptr, std::free)) {n=0;}
 
-  PointRange(char* filename) : values(std::shared_ptr<T[]>(nullptr, std::free)){
+  PointRange(char* filename, size_t max_size=0) : values(std::shared_ptr<T[]>(nullptr, std::free)){
       if(filename == NULL) {
         n = 0;
         dims = 0;
@@ -71,6 +71,8 @@ struct PointRange{
       unsigned int num_points;
       unsigned int d;
       reader.read((char*)(&num_points), sizeof(unsigned int));
+      if(max_size && num_points>max_size)
+          num_points = max_size;
       n = num_points;
       reader.read((char*)(&d), sizeof(unsigned int));
       dims = d;
