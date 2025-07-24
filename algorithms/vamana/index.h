@@ -239,6 +239,7 @@ struct knn_index {
     parlay::internal::timer t_beam("beam search time");
     parlay::internal::timer t_bidirect("bidirect time");
     parlay::internal::timer t_prune("prune time");
+    parlay::internal::timer t_build("build");
     t_beam.stop();
     t_bidirect.stop();
     t_prune.stop();
@@ -260,6 +261,7 @@ struct knn_index {
           frac += progress_inc;
           std::cout << "Pass " << 100 * frac << "% complete"
                     << std::endl;
+          t_build.next("prog");
         }
       }
       parlay::sequence<parlay::sequence<indexType>> new_out_(ceiling-floor);
