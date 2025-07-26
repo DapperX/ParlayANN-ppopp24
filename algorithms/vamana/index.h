@@ -223,8 +223,8 @@ struct knn_index {
     size_t m = inserts.size();
     size_t inc = 0;
     size_t count = 0;
-    float frac = 0.0;
     float progress_inc = .1;
+    float frac = progress_inc;
     size_t max_batch_size = std::min(
         static_cast<size_t>(max_fraction * static_cast<float>(n)), 1000000ul);
     //fix bug where max batch size could be set to zero 
@@ -254,15 +254,6 @@ struct knn_index {
         floor = count;
         ceiling = std::min(count + static_cast<size_t>(max_batch_size), m);
         count += static_cast<size_t>(max_batch_size);
-      }
-      if (print) {
-        auto ind = frac * n;
-        if (floor <= ind && ceiling > ind) {
-          frac += progress_inc;
-          std::cout << "Pass " << 100 * frac << "% complete"
-                    << std::endl;
-          t_build.next("prog");
-        }
       }
       parlay::sequence<parlay::sequence<indexType>> new_out_(ceiling-floor);
       // search for each node starting from the start_point, then call
@@ -308,8 +299,20 @@ struct knn_index {
         }
       });
       t_prune.stop();
+
+      if (print) {
+        auto ind = frac * n;
+        if (floor < ind && ceiling >= ind) {
+          std::cout << "Pass " << 100 * frac << "% complete"
+                    << std::endl;
+          t_build.next("prog");
+          frac += progress_inc;
+        }
+      }
+
       inc += 1;
     }
+    t_build.next("prog");
     t_beam.total();
     t_bidirect.total();
     t_prune.total();
