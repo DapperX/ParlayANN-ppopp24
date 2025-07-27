@@ -55,6 +55,65 @@ struct knn_index {
 
   indexType get_start() { return start_point; }
 
+  template<typename nid_t, class Seq, class D>
+  auto/*Seq*/ my_occlude_list(
+    Seq cand, uint32_t size, D &&f_dist, float alpha)
+  {
+    if(cand.size()<size)
+      return cand;
+
+    std::sort(cand.begin(), cand.end());
+
+    Seq res;
+    parlay::sequence<float> occlude_factor(cand.size());
+    res.reserve(size);
+
+    for(size_t i=0; i<cand.size() && res.size()<size; ++i)
+    {
+      if(occlude_factor[i] > alpha)
+        continue;
+
+      occlude_factor[i] = std::numeric_limits<float>::max();
+      res.push_back(cand[i]);
+
+      for(size_t j=i+1; j<cand.size(); ++j)
+      {
+        if(occlude_factor[j] > alpha)
+          continue;
+
+        float djk = f_dist(cand[j].first, cand[i].first);
+        occlude_factor[j] = (djk == 0) ? 
+          std::numeric_limits<float>::max() :
+          std::max(occlude_factor[j], cand[j].second/djk);
+      }
+    }
+    return res;
+  }
+
+  parlay::sequence<indexType> robustPrune2(indexType p, parlay::sequence<pid>& cand,
+                    GraphI &G, PR &Points, double alpha, bool add = true)
+  {
+    size_t out_size = G[p].size();
+    std::vector<pid> candidates;
+    for (auto x : cand) candidates.push_back(x);
+
+    if(add){
+      for (size_t i=0; i<out_size; i++) {
+        // candidates.push_back(std::make_pair(v[p]->out_nbh[i], Points[v[p]->out_nbh[i]].distance(Points[p])));
+        candidates.push_back(std::make_pair(G[p][i], Points[G[p][i]].distance(Points[p])));
+      }
+    }
+
+    auto f_dist = [&](indexType u, indexType v){
+      return Points[u].distance(Points[v]);
+    };
+    auto my_res = my_occlude_list<indexType>(candidates, BP.R, f_dist, alpha);
+    auto res = parlay::tabulate(my_res.size(), [&](size_t i){
+      return my_res[i].first;
+    });
+    return res;
+  }
+
   //robustPrune routine as found in DiskANN paper, with the exception
   //that the new candidate set is added to the field new_nbhs instead
   //of directly replacing the out_nbh of p
@@ -109,7 +168,7 @@ struct knn_index {
 
   //wrapper to allow calling robustPrune on a sequence of candidates 
   //that do not come with precomputed distances
-  parlay::sequence<indexType> robustPrune(indexType p, parlay::sequence<indexType> candidates,
+  parlay::sequence<indexType> robustPrune2(indexType p, parlay::sequence<indexType> candidates,
                     GraphI &G, PR &Points, double alpha, bool add = true){
 
     parlay::sequence<pid> cc;
@@ -117,7 +176,7 @@ struct knn_index {
     for (size_t i=0; i<candidates.size(); ++i) {
       cc.push_back(std::make_pair(candidates[i], Points[candidates[i]].distance(Points[p])));
     }
-    return robustPrune(p, cc, G, Points, alpha, add);
+    return robustPrune2(p, cc, G, Points, alpha, add);
   }
 
   void build_index(GraphI &G, PR &Points, stats<indexType> &BuildStats){
@@ -266,7 +325,7 @@ struct knn_index {
         parlay::sequence<pid> visited = 
           (beam_search2<Point, PointRange, indexType>(Points[index], G, Points, start_point, QP)).first.second;
         BuildStats.increment_visited(index, visited.size());
-        new_out_[i-floor] = robustPrune(index, visited, G, Points, alpha); });
+        new_out_[i-floor] = robustPrune2(index, visited, G, Points, alpha); });
       t_beam.stop();
       // make each edge bidirectional by first adding each new edge
       //(i,j) to a sequence, then semisorting the sequence by key values
@@ -295,7 +354,7 @@ struct knn_index {
         if (newsize <= BP.R) {
           G[index].append_neighbors(candidates);
         } else {
-          auto new_out_2_ = robustPrune(index, std::move(candidates), G, Points, alpha);  
+          auto new_out_2_ = robustPrune2(index, std::move(candidates), G, Points, alpha);  
           G[index].update_neighbors(new_out_2_);    
         }
       });

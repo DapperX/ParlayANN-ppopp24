@@ -134,7 +134,8 @@ auto my_beamSearch(
   using conn = conn<nid_t>;
 
   const auto nid_invalid = std::numeric_limits<nid_t>::max();
-  const uint32_t bits = ef>2? std::ceil(std::log2(ef))*2-2: 2;
+  // const uint32_t bits = ef>2? std::ceil(std::log2(ef))*2-2: 2;
+  const uint32_t bits = std::max<uint32_t>(10u, std::ceil(std::log2(ef*ef))-2);
   const uint32_t mask = (1u<<bits)-1;
   parlay::sequence<nid_t> hash_filter(mask+1, nid_invalid);
   auto is_seen = [&](nid_t u) -> bool{
@@ -253,7 +254,9 @@ beam_search2(Point p, Graph<indexType> &G, PointRange &Points,
   auto f_nbhs = [&](indexType u){
     long num_elts = std::min<long>(G[u].size(), QP.degree_limit);
     return parlay::delayed_seq<indexType>(num_elts, [&,u](size_t i){
-      return G[u][i];
+      indexType v = G[u][i];
+      Points[v].prefetch();
+      return v;
     });
   };
   auto f_dist = [&](indexType u){
