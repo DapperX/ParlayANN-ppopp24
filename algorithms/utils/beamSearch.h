@@ -22,11 +22,13 @@
 
 #pragma once
 
+#include <cassert>
 #include <algorithm>
 #include <functional>
 #include <random>
 #include <set>
 #include <unordered_set>
+#include <limits>
 
 #include "parlay/io.h"
 #include "parlay/parallel.h"
@@ -35,6 +37,234 @@
 #include "types.h"
 #include "graph.h"
 #include "stats.h"
+
+/*
+template<class T>
+class dist_evaluator{
+  using point_t = T;
+  using dist_t = float;
+
+  std::reference_wrapper<const point_t> p;
+  uint32_t dim;
+
+public:
+  dist_evaluator(const point_t &p, uint32_t dim) :
+    p(p), dim(dim){
+  }
+  dist_t operator()(const point_t &pv) const{
+    return U::distance(p, pv, dim);
+  }
+  dist_t operator()(const point_t &pu, const point_t &pv) const{
+    return U::distance(pu, pv, dim);
+  }
+};
+
+template<typename G>
+struct graph{
+  template<class Nbh>
+  struct edgeRange{
+    edgeRange(Nbh &nbh) : nbh(nbh){
+    }
+    decltype(auto) operator[](node_id pu) const{
+      return nbh.get()[pu];
+    }
+    auto size() const{
+      return nbh.get().size();
+    }
+    void prefetch() const{
+      int l = (size() * sizeof(node_id))/64;
+      for (int i=0; i < l; i++)
+        __builtin_prefetch((char*) nbh.get().data() + i*64);
+    }
+
+    std::reference_wrapper<Nbh> nbh;
+  };
+
+  using nid_t = node_id;
+
+  graph(const G &ig) : ig(ig){
+  }
+
+  decltype(auto) num_nodes() const{
+    return ig.get().n;
+  }
+  decltype(auto) get_node(node_id pu) const{
+    return ig.get().get_node(pu);
+  }
+  decltype(auto) get_edges(node_id pu){
+    return ig.get().neighbourhood(ig.get().get_node(pu));
+  }
+  decltype(auto) get_edges(node_id pu) const{
+    return ig.get().neighbourhood(ig.get().get_node(pu));
+  }
+
+  uint32_t max_degree() const{
+    return ig.get().get_threshold_m(l);
+  }
+
+  auto operator[](node_id pu){
+    return edgeRange(get_edges(pu));
+  }
+  auto operator[](node_id pu) const{
+    return edgeRange(get_edges(pu));
+  }
+
+  std::reference_wrapper<const HNSW<U,Allocator>> ig;
+  uint32_t l;
+};
+*/
+
+template<typename Nid>
+struct conn{
+  float d;  // distance stays as the first member
+  Nid u;
+
+  constexpr bool operator<(const conn &rhs) const{
+    return d<rhs.d;
+  }
+  constexpr bool operator>(const conn &rhs) const{
+    return d>rhs.d;
+  }
+};
+
+template<typename nid_t, class E, class D, class Seq>
+auto my_beamSearch(
+  E &&f_nbhs, D &&f_dist, const Seq &eps, uint32_t ef)
+{
+  using conn = conn<nid_t>;
+
+  const auto nid_invalid = std::numeric_limits<nid_t>::max();
+  const uint32_t bits = ef>2? std::ceil(std::log2(ef))*2-2: 2;
+  const uint32_t mask = (1u<<bits)-1;
+  parlay::sequence<nid_t> hash_filter(mask+1, nid_invalid);
+  auto is_seen = [&](nid_t u) -> bool{
+    const auto hu = parlay::hash64_2(u)&mask;
+    if(hash_filter[hu]==u) return true;
+    hash_filter[hu] = u;
+    return false;
+  };
+
+  parlay::sequence<conn> frontier;
+  frontier.reserve(eps.size());
+  for(nid_t pe : eps)
+  {
+    const auto h_pe = parlay::hash64_2(pe) & mask;
+    if(hash_filter[h_pe]==pe) continue;
+    hash_filter[h_pe] = pe;
+    const auto d = f_dist(pe);
+    frontier.push_back({d,pe});
+  }
+  // parlay::sort_inplace(frontier);
+  std::sort(frontier.begin(), frontier.end());
+
+  parlay::sequence<conn> unvisited_frontier;
+  unvisited_frontier.push_back(frontier[0]);
+
+  parlay::sequence<conn> visited;
+  visited.reserve(2*ef);
+
+  size_t dist_cmps = eps.size();
+  uint32_t num_visited = 0;
+
+  parlay::sequence<conn> new_frontier, candidates;
+  parlay::sequence<nid_t> keep;
+  while(unvisited_frontier.size()>0)
+  {
+    const conn &curr = unvisited_frontier[0];
+    visited.insert(
+      std::upper_bound(visited.begin(),visited.end(),curr),
+      curr
+    );
+    num_visited++;
+
+    keep.clear();
+    auto r = f_nbhs(curr.u);
+    for(auto it=r.begin(); it!=r.end(); ++it)
+    {
+      nid_t v = *it;
+      if(!is_seen(v))
+        keep.push_back(v);
+    };
+    /*
+    float cutoff = std::numeric_limits<float>::max();
+    if(frontier.size()>=ef)
+      cutoff = frontier.back().d;
+    */
+    candidates.clear();
+    for(nid_t v : keep)
+    {
+      const auto dv = f_dist(v);
+      dist_cmps++;
+      // if(dv>=cutoff) continue;
+      if(frontier.size()<ef || dv<frontier.back().d)
+      {
+        // assert(dv<cutoff)
+        candidates.push_back({dv,v});
+      }
+    }
+    // parlay::sort_inplace(candidates);
+    std::sort(candidates.begin(), candidates.end());
+
+    size_t max_cap = frontier.size() + candidates.size();
+    if(new_frontier.size()<max_cap)
+      new_frontier.resize(max_cap);
+    auto new_frontier_size = std::set_union(
+      frontier.begin(), frontier.end(),
+      candidates.begin(), candidates.end(),
+      new_frontier.begin()
+    ) - new_frontier.begin(); // TODO: early stop at size of ef
+
+    // new_frontier_size = std::min<size_t>(ef, new_frontier_size);
+    // if a k is given (i.e. k != 0) then trim off entries that have a
+    // distance greater than cut * curr-kth-smallest-distance.
+    // Only used during query and not during build.
+    /*
+    if(QP.k > 0 && new_frontier_size > QP.k)
+      new_frontier_size = std::upper_bound(
+        new_frontier.begin(), new_frontier.begin()+new_frontier_size,
+        std::pair{0, QP.cut * new_frontier[QP.k].second}
+      ) - new_frontier.begin();
+    */
+    new_frontier.resize(std::min<size_t>(new_frontier_size,ef));
+    frontier = std::move(new_frontier);
+    new_frontier.clear();
+
+    if(unvisited_frontier.size()<frontier.size())
+      unvisited_frontier.resize(frontier.size());
+    size_t num_remains = std::set_difference(
+      frontier.begin(), frontier.end(),
+      visited.begin(), visited.end(),
+      unvisited_frontier.begin()
+    ) - unvisited_frontier.begin();
+
+    unvisited_frontier.resize(num_remains);
+  }
+  
+  return std::make_pair(frontier, visited);
+}
+
+template<typename Point, typename PointRange, typename indexType>
+std::pair<std::pair<parlay::sequence<std::pair<indexType, typename Point::distanceType>>, parlay::sequence<std::pair<indexType, typename Point::distanceType>>>, indexType>
+beam_search2(Point p, Graph<indexType> &G, PointRange &Points,
+      indexType starting_point, QueryParams &QP)
+{
+  parlay::sequence<indexType> eps = {starting_point};
+  // return beam_search_impl<indexType>(p, G, Points, start_points, QP);
+  auto f_nbhs = [&](indexType u){
+    long num_elts = std::min<long>(G[u].size(), QP.degree_limit);
+    return parlay::delayed_seq<indexType>(num_elts, [&,u](size_t i){
+      return G[u][i];
+    });
+  };
+  auto f_dist = [&](indexType u){
+    return Points[u].distance(p);
+  };
+  auto my_res = my_beamSearch<indexType>(f_nbhs, f_dist, eps, QP.beamSize).second;
+  auto res = parlay::tabulate(my_res.size(), [&](size_t i){
+    return std::pair(my_res[i].u, my_res[i].d);
+  });
+  return std::pair(std::pair(decltype(res){}, res), 0);
+}
 
 // main beam search
 template<typename indexType, typename Point, typename PointRange, class GT>
@@ -151,7 +381,7 @@ beam_search_impl(Point p, GT &G, PointRange &Points,
       total += dist;
       dist_cmps++;
       // skip if frontier not full and distance too large
-      if (dist >= cutoff) continue;
+      // if (dist >= cutoff) continue;
       candidates.push_back(std::pair{a, dist});
     }
 
